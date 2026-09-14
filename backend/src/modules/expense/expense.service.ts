@@ -2,6 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { DataSource, Repository } from 'typeorm';
 import { ERROR_CODES } from '../../constants/errors';
+import { EXPENSE_LIMITS } from '../../constants/expense';
 import { AppException } from '../../common/errors/app.exception';
 import { ExpenseEntity } from './expense.entity';
 import { ExpenseShareEntity } from './expense-share.entity';
@@ -50,25 +51,20 @@ export class ExpenseService {
 
   /**
    * 新增一笔共同支出并落库分摊明细。
-   * 规则：仅行程成员可操作；金额必须大于零；参与分摊成员不能为空且必须都是行程成员；
-   * 付款人也必须是行程成员。支出与分摊在同一事务内写入，保证可回读、不出现半成品。
+   * 规则：仅行程成员可操作；金额必须为数字、大于零且不小于 0.01 元、不超过 DECIMAL(10,2) 上限；
+   * 参与分摊成员必须是非空整数数组且都是行程成员；付款人必须是行程成员；说明必须是文本。
+   * 所有入参先校验、再校验成员资格，全部通过后才在同一事务内写入，任何非法请求都不写数据。
    */
   async create(tripId: number, operatorId: number, input: CreateExpenseInput): Promise<ExpenseView> {
-    const amount = Number(input.amount);
-    if (!Number.isFinite(amount) || amount <= 0) {
-      throw new AppException(ERROR_CODES.EXPENSE_AMOUNT_INVALID, '金额必须大于零');
-    }
-    const participantIds = Array.from(new Set((input.participantIds ?? []).map(Number).filter(id => Number.isInteger(id))));
-    if (participantIds.length === 0) {
-      throw new AppException(ERROR_CODES.EXPENSE_PARTICIPANTS_REQUIRED, '参与分摊成员不能为空');
-    }
-    const payerId = Number(input.payerId);
-    if (!Number.isInteger(payerId)) {
-      throw new AppException(ERROR_CODES.VALIDATION_FAILED, '付款人不合法');
-    }
-
-    // 鉴权与跨行程隔离：操作者、付款人、参与人都必须属于本行程。
+    // 鉴权前置：非行程成员一律 403，不进入后续参数处理。
     await this.members.assertMember(tripId, operatorId);
+
+    const amount = this.validateAmount(input?.amount);
+    const participantIds = this.validateParticipantIds(input?.participantIds);
+    const payerId = this.validatePayerId(input?.payerId);
+    const description = this.validateDescription(input?.description);
+
+    // 跨行程隔离：付款人、参与人都必须属于本行程。
     const memberSet = await this.members.memberIdSet(tripId);
     if (!memberSet.has(payerId)) {
       throw new AppException(ERROR_CODES.PAYER_NOT_MEMBER, '付款人必须是行程成员');
@@ -86,7 +82,7 @@ export class ExpenseService {
           tripId,
           payerId,
           amount,
-          description: (input.description ?? '').trim()
+          description
         })
       );
       const shareRows = participantIds.map((userId, index) =>
@@ -96,6 +92,61 @@ export class ExpenseService {
       this.logger.log(`行程 ${tripId} 新增支出 #${expense.id}，金额 ${amount}，${participantIds.length} 人分摊`);
       return this.getById(tripId, expense.id, manager);
     });
+  }
+
+  /** 金额：必须是数字、有限、大于零、不小于最小货币单位、不超过存储上限、最多两位小数。 */
+  private validateAmount(raw: unknown): number {
+    if (typeof raw !== 'number' || !Number.isFinite(raw)) {
+      throw new AppException(ERROR_CODES.EXPENSE_AMOUNT_INVALID, '金额必须是数字');
+    }
+    const amount = raw;
+    if (amount <= 0 || Math.round(amount * 100) < 1) {
+      throw new AppException(ERROR_CODES.EXPENSE_AMOUNT_INVALID, `金额必须大于零且不小于 ${EXPENSE_LIMITS.MIN_AMOUNT} 元`);
+    }
+    if (amount > EXPENSE_LIMITS.MAX_AMOUNT) {
+      throw new AppException(ERROR_CODES.EXPENSE_AMOUNT_INVALID, `金额超出可存储上限 ${EXPENSE_LIMITS.MAX_AMOUNT} 元`);
+    }
+    if (Math.round(amount * 100) !== amount * 100) {
+      throw new AppException(ERROR_CODES.EXPENSE_AMOUNT_INVALID, '金额最多保留两位小数');
+    }
+    return amount;
+  }
+
+  /** 参与人：必须是非空数组，且每一项都是整数（字符串等类型明确拒绝，不做隐式转换）。 */
+  private validateParticipantIds(raw: unknown): number[] {
+    if (!Array.isArray(raw)) {
+      throw new AppException(ERROR_CODES.EXPENSE_PARTICIPANTS_REQUIRED, '参与分摊成员不能为空');
+    }
+    const ids = raw.filter((value): value is number => typeof value === 'number' && Number.isInteger(value));
+    if (ids.length !== raw.length) {
+      throw new AppException(ERROR_CODES.VALIDATION_FAILED, '参与分摊成员必须是成员编号');
+    }
+    const unique = Array.from(new Set(ids));
+    if (unique.length === 0) {
+      throw new AppException(ERROR_CODES.EXPENSE_PARTICIPANTS_REQUIRED, '参与分摊成员不能为空');
+    }
+    return unique;
+  }
+
+  /** 付款人：必须是整数编号。 */
+  private validatePayerId(raw: unknown): number {
+    if (typeof raw !== 'number' || !Number.isInteger(raw)) {
+      throw new AppException(ERROR_CODES.VALIDATION_FAILED, '付款人不合法');
+    }
+    return raw;
+  }
+
+  /** 说明：缺省按空串处理；若提供则必须是文本且不超过字段长度。 */
+  private validateDescription(raw: unknown): string {
+    if (raw === undefined || raw === null) return '';
+    if (typeof raw !== 'string') {
+      throw new AppException(ERROR_CODES.VALIDATION_FAILED, '说明必须是文本');
+    }
+    const description = raw.trim();
+    if (description.length > EXPENSE_LIMITS.MAX_DESCRIPTION_LENGTH) {
+      throw new AppException(ERROR_CODES.VALIDATION_FAILED, `说明不能超过 ${EXPENSE_LIMITS.MAX_DESCRIPTION_LENGTH} 个字符`);
+    }
+    return description;
   }
 
   /** 列出行程全部支出（仅成员），分摊明细一并回读。 */
