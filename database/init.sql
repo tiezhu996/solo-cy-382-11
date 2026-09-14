@@ -45,3 +45,35 @@ CREATE TABLE IF NOT EXISTS diary_entries (
   content TEXT NOT NULL,
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
+
+-- 行程成员关系：仅成员可参与该行程共同支出
+CREATE TABLE IF NOT EXISTS trip_members (
+  id BIGINT PRIMARY KEY AUTO_INCREMENT,
+  trip_id BIGINT NOT NULL,
+  user_id BIGINT NOT NULL,
+  joined_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE KEY uq_trip_member (trip_id, user_id),
+  KEY idx_trip_members_user (user_id)
+);
+
+-- 行程共同支出
+CREATE TABLE IF NOT EXISTS expenses (
+  id BIGINT PRIMARY KEY AUTO_INCREMENT,
+  trip_id BIGINT NOT NULL,
+  payer_id BIGINT NOT NULL,
+  amount DECIMAL(10,2) NOT NULL,
+  description VARCHAR(255) NOT NULL DEFAULT '',
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  KEY idx_expenses_trip (trip_id)
+);
+
+-- 支出分摊明细
+CREATE TABLE IF NOT EXISTS expense_shares (
+  id BIGINT PRIMARY KEY AUTO_INCREMENT,
+  expense_id BIGINT NOT NULL,
+  trip_id BIGINT NOT NULL,
+  user_id BIGINT NOT NULL,
+  share_amount DECIMAL(10,2) NOT NULL,
+  KEY idx_expense_shares_expense (expense_id),
+  KEY idx_expense_shares_trip_user (trip_id, user_id)
+);

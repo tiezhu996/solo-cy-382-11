@@ -1,1 +1,4 @@
 body{margin:0;background:#eef2f7;color:#172033;font-family:Inter,Arial,"Microsoft YaHei",sans-serif}.shell{min-height:100vh}.side{background:#10233f!important;color:#fff;padding:24px}.side h1{font-size:24px}.content{padding:24px}.form{max-width:720px}.ant-card{border-radius:8px}
+
+/* 共同支出分账页 */
+.expense-page{background:transparent;padding:0}.expense-auth{max-width:420px;margin:48px auto}.expense-header{display:flex;justify-content:flex-end;padding:0 0 12px}.trip-picker{margin-bottom:16px}.member-gate{background:#fff;border-radius:8px;margin-top:8px}.expense-body .ant-card{height:100%}.expense-tag{margin:0 8px}.settlement{display:flex;flex-direction:column;gap:16px}.settlement-table .ant-tag{margin:0}.settlement-transfers{background:#fafbfc}.transfer-row{margin-bottom:8px}@media(max-width:992px){.expense-body .ant-col{margin-bottom:16px}}
