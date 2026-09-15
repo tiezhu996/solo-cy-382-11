@@ -2,7 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { DataSource, Repository } from 'typeorm';
 import { ERROR_CODES } from '../../constants/errors';
-import { EXPENSE_LIMITS } from '../../constants/expense';
+import { AMOUNT_GRID_ULP_FACTOR, EXPENSE_LIMITS } from '../../constants/expense';
 import { AppException } from '../../common/errors/app.exception';
 import { ExpenseEntity } from './expense.entity';
 import { ExpenseShareEntity } from './expense-share.entity';
@@ -94,22 +94,34 @@ export class ExpenseService {
     });
   }
 
-  /** 金额：必须是数字、有限、大于零、不小于最小货币单位、不超过存储上限、最多两位小数。 */
+  /**
+   * 金额：必须是数字、有限、大于零、不小于最小货币单位、不超过存储上限、最多两位小数。
+   * 统一换算成整数“分”后再判断，并用极小容差吸收二进制浮点误差
+   * （如 0.29*100 = 28.999999999999996），避免误杀合法的两位小数。
+   */
   private validateAmount(raw: unknown): number {
     if (typeof raw !== 'number' || !Number.isFinite(raw)) {
       throw new AppException(ERROR_CODES.EXPENSE_AMOUNT_INVALID, '金额必须是数字');
     }
-    const amount = raw;
-    if (amount <= 0 || Math.round(amount * 100) < 1) {
+    if (raw <= 0) {
       throw new AppException(ERROR_CODES.EXPENSE_AMOUNT_INVALID, `金额必须大于零且不小于 ${EXPENSE_LIMITS.MIN_AMOUNT} 元`);
     }
-    if (amount > EXPENSE_LIMITS.MAX_AMOUNT) {
-      throw new AppException(ERROR_CODES.EXPENSE_AMOUNT_INVALID, `金额超出可存储上限 ${EXPENSE_LIMITS.MAX_AMOUNT} 元`);
-    }
-    if (Math.round(amount * 100) !== amount * 100) {
+
+    const exactCents = raw * 100;
+    const cents = Math.round(exactCents);
+    // 与整数“分”网格的偏差超过随数量级缩放的容差，说明存在第三位及以上小数。
+    const tolerance = Math.max(Number.EPSILON * Math.abs(exactCents) * AMOUNT_GRID_ULP_FACTOR, 1e-9);
+    if (Math.abs(exactCents - cents) > tolerance) {
       throw new AppException(ERROR_CODES.EXPENSE_AMOUNT_INVALID, '金额最多保留两位小数');
     }
-    return amount;
+    // 亚分：四舍五入后不足 1 分（0.001、0.004、0.005 等）。
+    if (cents < 1) {
+      throw new AppException(ERROR_CODES.EXPENSE_AMOUNT_INVALID, `金额必须大于零且不小于 ${EXPENSE_LIMITS.MIN_AMOUNT} 元`);
+    }
+    if (cents > EXPENSE_LIMITS.MAX_AMOUNT_CENTS) {
+      throw new AppException(ERROR_CODES.EXPENSE_AMOUNT_INVALID, `金额超出可存储上限 ${EXPENSE_LIMITS.MAX_AMOUNT} 元`);
+    }
+    return raw;
   }
 
   /** 参与人：必须是非空数组，且每一项都是整数（字符串等类型明确拒绝，不做隐式转换）。 */

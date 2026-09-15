@@ -98,6 +98,59 @@ describe('共同支出：金额、参与人、说明的入参边界', () => {
     expect(max.body.amount).toBe(99_999_999.99);
   });
 
+  it('所有合法两位小数（含曾被误杀的 0.29/0.57/0.58）都能保存并原样回读', async () => {
+    const { harness, tripId, members } = scenario;
+    // 报告中的回归值 + 一组有二进制浮点误差风险的两位小数
+    const amounts = [0.29, 0.57, 0.58, 0.07, 0.13, 0.17, 0.23, 0.31, 0.83, 1.07, 12.29, 100.57, 0.01, 99.99];
+
+    for (const amount of amounts) {
+      const res = await harness.addExpense(members[0].token, tripId, { ...basePayload(), amount });
+      expect({ amount, status: res.status, code: res.body?.code }).toMatchObject({ amount, status: 201 });
+      // 写入后回读，金额与输入一致（两位小数精度）
+      const detail = await harness.expenseDetail(members[0].token, tripId, res.body.id);
+      expect(detail.status).toBe(200);
+      expect(detail.body.amount).toBeCloseTo(amount, 2);
+    }
+
+    const list = await harness.listExpenses(members[0].token, tripId);
+    expect(list.body).toHaveLength(amounts.length);
+  });
+
+  it('三位及以上小数一律被拒绝（容差不能放过真正的亚分位）', async () => {
+    // 0.001/0.005 等已由“亚分”用例覆盖，这里聚焦“>=1 分但含第三位小数”的值
+    for (const amount of [0.011, 0.029, 0.123, 0.299, 1.235, 10.999, 0.579]) {
+      await expectRejectedWithoutWrite({ ...basePayload(), amount }, 'EXPENSE_AMOUNT_INVALID');
+    }
+  });
+
+  it('大额两位小数正常保存；贴网格的三位以上小数仍被拒绝', async () => {
+    const { harness, tripId, members } = scenario;
+    // 大额端浮点误差放大，曾是固定容差的贴边风险点
+    for (const amount of [73_852_972.07, 99_999_999.99, 10_000_000.03]) {
+      const res = await harness.addExpense(members[0].token, tripId, { ...basePayload(), amount });
+      expect({ amount, status: res.status }).toMatchObject({ amount, status: 201 });
+      expect(res.body.amount).toBeCloseTo(amount, 2);
+    }
+    // 小金额端容差必须足够紧：仅比 0.01 多 0.00001 的值含第五位小数，必须拒绝
+    await expectRejectedWithoutWrite({ ...basePayload(), amount: 0.01001 }, 'EXPENSE_AMOUNT_INVALID');
+  });
+
+  it('0.29 在三人分摊时余数按分补齐且合计仍是 0.29，结算总额正确', async () => {
+    const { harness, tripId, members } = scenario;
+    const res = await harness.addExpense(members[0].token, tripId, {
+      payerId: members[0].id,
+      participantIds: members.map(m => m.id),
+      amount: 0.29
+    });
+    expect(res.status).toBe(201);
+    const shares = res.body.participants.map((p: any) => p.shareAmount);
+    expect(shares).toEqual([0.1, 0.1, 0.09]);
+    expect(Math.round(shares.reduce((s: number, v: number) => s + v, 0) * 100)).toBe(29);
+
+    const settlement = await harness.settlement(members[0].token, tripId);
+    expect(settlement.body.totalAmount).toBeCloseTo(0.29, 2);
+  });
+
   it('合法说明：255 字可写入，缺省按空字符串处理', async () => {
     const { harness, tripId, members } = scenario;
     const longText = await harness.addExpense(members[0].token, tripId, { ...basePayload(), description: '好'.repeat(255) });
