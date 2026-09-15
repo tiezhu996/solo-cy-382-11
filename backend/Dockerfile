@@ -1,7 +1,8 @@
 FROM node:20-alpine AS deps
 WORKDIR /app
 COPY package*.json ./
-RUN npm install
+# --omit=optional：跳过仅供本地/CI 测试使用的 better-sqlite3（原生模块），避免在 alpine 上编译
+RUN npm install --omit=optional
 
 FROM deps AS build
 COPY . .
